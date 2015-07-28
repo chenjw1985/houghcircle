@@ -10,54 +10,50 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
 )
+
+const FILENAME = "hough"
 
 var (
 	Gaos   []float64 //高斯模糊权重
-	path   string    //当前路径
-	cstep  int       //圆心误差
 	radius float64   //圆直径
 )
+
+type Result struct {
+	H []int
+	M int
+}
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	Gaos = []float64{0.0947416, 0.118318, 0.0947416, 0.118318, 0.147761, 0.118318, 0.0947416, 0.118318, 0.0947416}
-	radius = 45.0
-	cstep = 5
-	path, _ = os.Getwd()
 }
 
 func main() {
-	openImg("cache/test.jpg", i)
-}
-
-/**
- * 查找图片
- *
- **/
-func openImg(filename string, page int) {
+	filename := "./cache/test2.jpg"
 	reader, err := os.Open(filename)
 	if err != nil {
-		LOGS.Error(err.Error())
+		fmt.Println(err.Error())
 	}
 	defer reader.Close()
 	//reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(data))
 	m, _, err := image.Decode(reader)
 	if err != nil {
-		LOGS.Error(err.Error())
+		fmt.Println(err.Error())
 	}
 
 	w, h := m.Bounds().Max.X, m.Bounds().Max.Y
 
-	process(m, page, w, h, 2, cmdtype)
+	process(m, w, h, 2)
 }
 
 /**
  * 查找开始
  *, radius float64
  **/
-func process(m image.Image, page, w, h, style int, normal bool) {
+func process(m image.Image, w, h, style int) {
 	//获取灰度值
 	grayBox := getGrayColors(m, w, h, 2)
 	//fmt.Println("grayBox end..........")
@@ -71,38 +67,27 @@ func process(m image.Image, page, w, h, style int, normal bool) {
 	var newBox []uint8
 	var rw int
 	var rh int
+	var Results []Result
 
-	if normal == true {
-		newBox, rw, rh = clearPix(twoBox, w, h)
-	} else {
-		newBox, rw, rh = twoBox, w, h
+	newBox, rw, rh = twoBox, w, h
+
+	i, l := 88, 90
+	chs := make([]chan Result, l-i)
+	for ; i < l; i++ {
+		k := i - 88
+		chs[k] = make(chan Result)
+		go HoughCircle(newBox, rw, rh, float64(i), chs[k])
+	}
+	for _, ch := range chs {
+		Results = append(Results, <-ch)
 	}
 
-	pagescale = float64(rw) / A4[0]
-	radius = radius * pagescale
-
-	//霍夫换算
-	hrect, max := HoughCircle(newBox, rw, rh, radius)
-	if debug == true {
-		fmt.Println("process", page, max)
-	}
-	if max > 250 {
-		//绘制找出的公章位置
-		img, c := findCircle(hrect, 3, rw, rh, radius)
-		saveImg(img, "4-stamp--"+FILENAME)
-
-		l := float64(1024) / float64(rw) * float64(c[1])
-		whsize := float64(c[2]) / float64(c[1])
-		t := float64(whsize) * float64(l)
-		r := radius / float64(rw) * float64(l)
-
-		if debug == true {
-			fmt.Println(l, t, r, whsize)
-			fmt.Println(page, int(l-r-35), int(t-r-50), int(r+10))
+	for k, v := range Results {
+		if v.M > 250 {
+			//绘制找出的公章位置
+			img, _ := findCircle(v.H, 3, rw, rh, radius)
+			saveImg(img, "4-circle-"+strconv.Itoa(k)+"-"+FILENAME)
 		}
-		//转换为True公章n string,p,x,y,r int
-		//STAMP_ARR = append(STAMP_ARR, createTrueStamp("中威科技", 1, 576, 774, 77))
-		STAMP_ARR = append(STAMP_ARR, createTrueStamp(stampname, page, int(l-r-35), int(t-r-50), int(r+10)))
 	}
 }
 
@@ -279,7 +264,7 @@ func getGaosColor(rect []uint8, w, h, x, y int) uint8 {
 /**
  * 霍夫变换
  **/
-func HoughCircle(rect []uint8, w, h int, radius float64) ([]int, int) {
+func HoughCircle(rect []uint8, w, h int, radius float64, ch chan Result) ([]int, int) {
 
 	var t float64
 	x0, y0 := 0, 0
@@ -327,7 +312,7 @@ func HoughCircle(rect []uint8, w, h int, radius float64) ([]int, int) {
 		}
 	}
 	saveImg(cache, "3-hough--"+FILENAME)
-
+	ch <- Result{acc, max}
 	return acc, max
 }
 
@@ -426,9 +411,6 @@ func drawCircle(output *image.NRGBA, pix, xc, yc int, radius float64) {
  *
  **/
 func saveImg(img draw.Image, name string) error {
-	if debug == false {
-		return nil
-	}
 	draw.Draw(img, img.Bounds(), img, image.ZP, draw.Src)
 	f, err := os.Create("temps/" + name + ".jpeg")
 	if err != nil {
