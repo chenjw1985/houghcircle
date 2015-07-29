@@ -10,14 +10,13 @@ import (
 	"math"
 	"os"
 	"runtime"
-	"strconv"
 )
 
 const FILENAME = "hough"
 
 var (
 	Gaos   []float64 //高斯模糊权重
-	radius float64   //圆直径
+	radius float64   //圆半径
 )
 
 type Result struct {
@@ -56,9 +55,6 @@ func main() {
 func process(m image.Image, w, h, style int) {
 	//获取灰度值
 	grayBox := getGrayColors(m, w, h, 2)
-	//fmt.Println("grayBox end..........")
-
-	//twoBox := getTwoColors(grayBox, w, h)
 
 	gaosBox := getGaosColors(grayBox, w, h)
 
@@ -71,10 +67,10 @@ func process(m image.Image, w, h, style int) {
 
 	newBox, rw, rh = twoBox, w, h
 
-	i, l := 88, 90
+	i, l := 100, 150
 	chs := make([]chan Result, l-i)
 	for ; i < l; i++ {
-		k := i - 88
+		k := i - 100
 		chs[k] = make(chan Result)
 		go HoughCircle(newBox, rw, rh, float64(i), chs[k])
 	}
@@ -82,13 +78,115 @@ func process(m image.Image, w, h, style int) {
 		Results = append(Results, <-ch)
 	}
 
-	for k, v := range Results {
+	for _, v := range Results {
+		fmt.Println(v.M)
 		if v.M > 250 {
 			//绘制找出的公章位置
-			img, _ := findCircle(v.H, 3, rw, rh, radius)
-			saveImg(img, "4-circle-"+strconv.Itoa(k)+"-"+FILENAME)
+			centers := findCircle(v.H, 3, rw, rh, radius)
+			fmt.Println(centers)
+			//saveImg(img, "4-circle-"+strconv.Itoa(k)+"-"+FILENAME)
 		}
 	}
+}
+
+/**
+ * 霍夫变换
+ **/
+func HoughCircle(rect []uint8, w, h int, radius float64, ch chan Result) ([]int, int) {
+
+	var t float64
+	x0, y0 := 0, 0
+	acc := make([]int, w*h)
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			acc = append(acc, 0)
+		}
+	}
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			if (rect[x+(y*w)] & 0xff) == 255 {
+				for theta := 0; theta < 360; theta++ {
+					t = (float64(theta) * 3.14159265) / 180
+					x0 = int(math.Floor(float64(x) - radius*math.Cos(t)))
+					y0 = int(math.Floor(float64(y) - radius*math.Sin(t)))
+					if x0 < w && x0 > 0 && y0 < h && y0 > 0 {
+						acc[x0+(y0*w)] += 1
+					}
+				}
+			}
+		}
+	}
+	max := 0
+
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			if acc[x+(y*w)] > max {
+				max = acc[x+(y*w)]
+			}
+		}
+	}
+	v := 0
+	cache := image.NewNRGBA(image.Rect(0, 0, w, h))
+
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			v = int((float64(acc[x+(y*w)]) / float64(max)) * 255.0)
+			acc[x+(y*w)] = 0 | (v<<16 | v<<8 | v)
+			cache.Set(x, y, color.RGBA{uint8(acc[x+(y*w)]), uint8(acc[x+(y*w)]), uint8(acc[x+(y*w)]), 255})
+		}
+	}
+	saveImg(cache, "3-hough--"+FILENAME)
+	ch <- Result{acc, max}
+	return acc, max
+}
+
+/**
+ * 查找圆
+ *
+ **/
+func findCircle(acc []int, accsize, w, h int, radius float64) []int {
+	/**
+	[0,1,2,3,4,5,6,7,8]
+	**/
+	results := make([]int, accsize*3, accsize*3)
+
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+
+			v := acc[x+(y*w)] & 0xff
+
+			if v > results[(accsize-1)*3] {
+
+				results[(accsize-1)*3] = v
+				results[(accsize-1)*3+1] = x
+				results[(accsize-1)*3+2] = y
+
+				i := (accsize - 2) * 3
+				for i >= 0 && results[i+3] > results[i] {
+					for j := 0; j < 3; j++ {
+						//temp := results[i+3+j]
+						temp := results[i+j]
+						results[i+j] = results[i+3+j]
+						results[i+3+j] = temp
+					}
+					i = i - 3
+					if i < 0 {
+						break
+					}
+				}
+			}
+
+		}
+	}
+	center := make([]int, accsize*3, accsize*3)
+	// 根据找到的半径R，中心点像素坐标p(x, y)，绘制圆在原图像上
+	for i := accsize - 1; i >= 0; i-- {
+		center[i*3] = results[i*3]
+		center[i*3+1] = results[i*3+1]
+		center[i*3+2] = results[i*3+2]
+	}
+	return center
 }
 
 /**
@@ -262,116 +360,10 @@ func getGaosColor(rect []uint8, w, h, x, y int) uint8 {
 }
 
 /**
- * 霍夫变换
- **/
-func HoughCircle(rect []uint8, w, h int, radius float64, ch chan Result) ([]int, int) {
-
-	var t float64
-	x0, y0 := 0, 0
-	//初始化极坐标
-	acc := make([]int, w*h)
-
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			acc = append(acc, 0)
-		}
-	}
-	//绘制极坐标
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			if (rect[x+(y*w)] & 0xff) == 255 {
-				for theta := 0; theta < 360; theta++ {
-					t = (float64(theta) * 3.14159265) / 180
-					x0 = int(math.Floor(float64(x) - radius*math.Cos(t)))
-					y0 = int(math.Floor(float64(y) - radius*math.Sin(t)))
-					if x0 < w && x0 > 0 && y0 < h && y0 > 0 {
-						acc[x0+(y0*w)] += 1
-					}
-				}
-			}
-		}
-	}
-	max := 0
-
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			if acc[x+(y*w)] > max {
-				max = acc[x+(y*w)]
-			}
-		}
-	}
-	//根据最大值，实现极坐标空间的灰度值归一处理
-	v := 0
-	cache := image.NewNRGBA(image.Rect(0, 0, w, h))
-
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			v = int((float64(acc[x+(y*w)]) / float64(max)) * 255.0)
-			acc[x+(y*w)] = 0 | (v<<16 | v<<8 | v)
-			cache.Set(x, y, color.RGBA{uint8(acc[x+(y*w)]), uint8(acc[x+(y*w)]), uint8(acc[x+(y*w)]), 255})
-		}
-	}
-	saveImg(cache, "3-hough--"+FILENAME)
-	ch <- Result{acc, max}
-	return acc, max
-}
-
-/**
- * 查找圆
- *
- **/
-func findCircle(acc []int, accsize, w, h int, radius float64) (draw.Image, []int) {
-	/**
-	[0,1,2,3,4,5,6,7,8]
-	**/
-	results := make([]int, accsize*3, accsize*3)
-	output := image.NewNRGBA(image.Rect(0, 0, w, h))
-
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-
-			v := acc[x+(y*w)] & 0xff
-			//if its higher then lowest value add it and then sort
-			if v > results[(accsize-1)*3]-10 {
-				//add to bottom of array
-				results[(accsize-1)*3] = v
-				results[(accsize-1)*3+1] = x
-				results[(accsize-1)*3+2] = y
-				//shift up until its in right place
-				i := (accsize - 2) * 3
-				for i >= 0 && results[i+3] > results[i] {
-					for j := 0; j < 3; j++ {
-						temp := results[i+3+j]
-						results[i+j] = results[i+3+j]
-						results[i+3+j] = temp
-					}
-					i = i - 3
-					if i < 0 {
-						break
-					}
-				}
-			}
-
-		}
-	}
-	center := make([]int, accsize*3, accsize*3)
-	// 根据找到的半径R，中心点像素坐标p(x, y)，绘制圆在原图像上
-	for i := accsize - 1; i >= 0; i-- {
-		drawCircle(output, results[i*3], results[i*3+1], results[i*3+2], radius)
-		center[i*3] = results[i*3]
-		center[i*3+1] = results[i*3+1]
-		center[i*3+2] = results[i*3+2]
-	}
-	return output, center
-}
-
-/**
  * 绘制圆
  *
  **/
 func drawCircle(output *image.NRGBA, pix, xc, yc int, radius float64) {
-	//圆心
-	//fmt.Println(xc, yc)
 	pix = 255
 	x, y := 0, 0
 	r2 := radius * radius
@@ -381,11 +373,9 @@ func drawCircle(output *image.NRGBA, pix, xc, yc int, radius float64) {
 	output.Set(xc+int(radius), yc, color.RGBA{255, 0, 0, 255})
 	output.Set(xc-int(radius), yc, color.RGBA{255, 0, 0, 255})
 
-	//y = int(radius) ???
 	x = 1
 	y = int(math.Sqrt(r2-1) + 0.5)
 
-	// 边缘填充算法， 其实可以直接对循环所有像素，计算到做中心点距离来做
 	for x < y {
 		output.Set(xc+x, yc+y, color.RGBA{255, 0, 0, 255})
 		output.Set(xc+x, yc-y, color.RGBA{255, 0, 0, 255})
@@ -419,7 +409,6 @@ func saveImg(img draw.Image, name string) error {
 	defer f.Close()
 
 	err = jpeg.Encode(f, img, &jpeg.Options{90})
-	//err = png.Encode(f3, __m)
 	if err != nil {
 		panic(err)
 	}
@@ -450,8 +439,6 @@ func byteToHex(b []byte) string {
 	return hexStr
 }
 
-// Get bytes to file.
-// if non-exist, create this file.
 func File_get_contents(filename string) ([]byte, error) {
 	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
@@ -470,8 +457,6 @@ func File_get_contents(filename string) ([]byte, error) {
 	return []byte(""), err
 }
 
-// Put bytes to file.
-// if non-exist, create this file.
 func File_put_contents(filename string, content []byte) error {
 	fp, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
