@@ -15,13 +15,16 @@ import (
 const FILENAME = "hough"
 
 var (
-	Gaos   []float64 //高斯模糊权重
-	radius float64   //圆半径
+	Gaos      []float64 //高斯模糊权重
+	radius    float64   //圆半径
+	BaseIMG   image.Image
+	BaseIMGBG *image.NRGBA
 )
 
 type Result struct {
 	H []int
 	M int
+	R float64
 }
 
 func init() {
@@ -42,6 +45,8 @@ func main() {
 	if err != nil {
 		fmt.Println(err.Error())
 	}
+	BaseIMG = m
+	BaseIMGBG = image.NewNRGBA(BaseIMG.Bounds())
 
 	w, h := m.Bounds().Max.X, m.Bounds().Max.Y
 
@@ -67,26 +72,28 @@ func process(m image.Image, w, h, style int) {
 
 	newBox, rw, rh = twoBox, w, h
 
-	i, l := 100, 150
+	i, l := 30, 50
 	chs := make([]chan Result, l-i)
 	for ; i < l; i++ {
-		k := i - 100
+		k := i - 30
 		chs[k] = make(chan Result)
 		go HoughCircle(newBox, rw, rh, float64(i), chs[k])
 	}
 	for _, ch := range chs {
 		Results = append(Results, <-ch)
 	}
-
+	draw.Draw(BaseIMGBG, BaseIMG.Bounds(), BaseIMG, BaseIMG.Bounds().Min, draw.Src)
 	for _, v := range Results {
-		fmt.Println(v.M)
-		if v.M > 250 {
+		if v.M > 300 {
 			//绘制找出的公章位置
-			centers := findCircle(v.H, 3, rw, rh, radius)
-			fmt.Println(centers)
-			//saveImg(img, "4-circle-"+strconv.Itoa(k)+"-"+FILENAME)
+			results := findCircle(v.H, 3, rw, rh, v.R)
+			i, l := 0, len(results)/3
+			for ; i < l; i++ {
+				drawCircle(BaseIMGBG, results[i*3+1], results[i*3+2], v.R)
+			}
 		}
 	}
+	saveImg(BaseIMGBG, "4-stamp--"+FILENAME)
 }
 
 /**
@@ -118,7 +125,6 @@ func HoughCircle(rect []uint8, w, h int, radius float64, ch chan Result) ([]int,
 		}
 	}
 	max := 0
-
 	for x := 0; x < w; x++ {
 		for y := 0; y < h; y++ {
 			if acc[x+(y*w)] > max {
@@ -137,7 +143,7 @@ func HoughCircle(rect []uint8, w, h int, radius float64, ch chan Result) ([]int,
 		}
 	}
 	saveImg(cache, "3-hough--"+FILENAME)
-	ch <- Result{acc, max}
+	ch <- Result{acc, max, radius}
 	return acc, max
 }
 
@@ -165,10 +171,7 @@ func findCircle(acc []int, accsize, w, h int, radius float64) []int {
 				i := (accsize - 2) * 3
 				for i >= 0 && results[i+3] > results[i] {
 					for j := 0; j < 3; j++ {
-						//temp := results[i+3+j]
-						temp := results[i+j]
-						results[i+j] = results[i+3+j]
-						results[i+3+j] = temp
+						results[i+j], results[i+3+j] = results[i+3+j], results[i+j]
 					}
 					i = i - 3
 					if i < 0 {
@@ -187,6 +190,43 @@ func findCircle(acc []int, accsize, w, h int, radius float64) []int {
 		center[i*3+2] = results[i*3+2]
 	}
 	return center
+}
+
+/**
+ * 绘制圆
+ *
+ **/
+func drawCircle(output *image.NRGBA, xc, yc int, radius float64) {
+	x, y := 0, 0
+	r2 := radius * radius
+	c := color.RGBA{175, 0, 255, 255}
+	//绘制圆的四个方向的定点
+	output.Set(xc, yc+int(radius), c)
+	output.Set(xc, yc-int(radius), c)
+	output.Set(xc+int(radius), yc, c)
+	output.Set(xc-int(radius), yc, c)
+
+	x = 1
+	y = int(math.Sqrt(r2-1) + 0.5)
+
+	for x < y {
+		output.Set(xc+x, yc+y, c)
+		output.Set(xc+x, yc-y, c)
+		output.Set(xc-x, yc+y, c)
+		output.Set(xc-x, yc-y, c)
+		output.Set(xc+y, yc+x, c)
+		output.Set(xc+y, yc-x, c)
+		output.Set(xc-y, yc+x, c)
+		output.Set(xc-y, yc-x, c)
+		x += 1
+		y = (int)(math.Sqrt(r2-float64(x)*float64(x)) + 0.5)
+	}
+	if x == y {
+		output.Set(xc+x, yc+y, c)
+		output.Set(xc+x, yc-y, c)
+		output.Set(xc-x, yc+y, c)
+		output.Set(xc-x, yc-y, c)
+	}
 }
 
 /**
@@ -357,43 +397,6 @@ func getGaosColor(rect []uint8, w, h, x, y int) uint8 {
 		point += float64(point9[i]) * Gaos[i]
 	}
 	return uint8(point)
-}
-
-/**
- * 绘制圆
- *
- **/
-func drawCircle(output *image.NRGBA, pix, xc, yc int, radius float64) {
-	pix = 255
-	x, y := 0, 0
-	r2 := radius * radius
-	//绘制圆的四个方向的定点
-	output.Set(xc, yc+int(radius), color.RGBA{255, 0, 0, 255})
-	output.Set(xc, yc-int(radius), color.RGBA{255, 0, 0, 255})
-	output.Set(xc+int(radius), yc, color.RGBA{255, 0, 0, 255})
-	output.Set(xc-int(radius), yc, color.RGBA{255, 0, 0, 255})
-
-	x = 1
-	y = int(math.Sqrt(r2-1) + 0.5)
-
-	for x < y {
-		output.Set(xc+x, yc+y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc+x, yc-y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-x, yc+y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-x, yc-y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc+y, yc+x, color.RGBA{255, 0, 0, 255})
-		output.Set(xc+y, yc-x, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-y, yc+x, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-y, yc-x, color.RGBA{255, 0, 0, 255})
-		x += 1
-		y = (int)(math.Sqrt(r2-float64(x)*float64(x)) + 0.5)
-	}
-	if x == y {
-		output.Set(xc+x, yc+y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc+x, yc-y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-x, yc+y, color.RGBA{255, 0, 0, 255})
-		output.Set(xc-x, yc-y, color.RGBA{255, 0, 0, 255})
-	}
 }
 
 /**
